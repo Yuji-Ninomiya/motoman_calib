@@ -14,15 +14,17 @@
 #include <pcl/io/vtk_lib_io.h>
 #include <pcl/point_types.h>
 #include <pcl/registration/icp.h>
+#include <pcl/registration/ndt.h>
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/passthrough.h>
+#include <pcl/filters/voxel_grid.h>
 #include <pcl/search/kdtree.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl_ros/impl/transforms.hpp>
 
 const int sampling_points = 10000;
 
-#define gazebo
+// #define gazebo
 
 inline double
 uniform_deviate (int seed)
@@ -112,7 +114,7 @@ class MotomanMeshCloud
 {
 public:
   MotomanMeshCloud()
-    : rate_(1), pcl_shifted_cloud_(new pcl::PointCloud<pcl::PointXYZ>())
+    : rate_(1), pcl_shifted_cloud_(new pcl::PointCloud<pcl::PointXYZ>()), init_icp_finished_(false)
   {
     link_names_.push_back("base_link.stl");
     frame_names_.push_back("/base_link");
@@ -130,19 +132,23 @@ public:
     frame_names_.push_back("/link_b");
     link_names_.push_back("link_t.stl");
     frame_names_.push_back("/link_t");
-
+	
     corrected_cloud_frame_ = "kinect2_rgb_optical_frame";
     
     for(int i = 0; i < link_names_.size(); ++i){
       this->getMesh(ros::package::getPath("motoman_description")+"/meshes/sia5/collision/STL/"+link_names_[i], frame_names_[i]);
     }
-    
+	frame_names_.push_back("dhand_adapter_link");
+	frame_names_.push_back("dhand_base_link");
+    this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/adapter.STL", "dhand_adapter_link");
+	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/base.STL", "dhand_base_link");
+	
     this->transformMesh();
     
     mesh_pointcloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/mesh_cloud", 1);
     shifted_cloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/shifted_cloud",1);
     corrected_cloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/corrected_cloud",1);
-    kinect_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>("/kinect2/hd/points", 10, boost::bind(&MotomanMeshCloud::pointCloudCallback, this, _1));
+    kinect_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>("/kinect_first/hd/points", 10, boost::bind(&MotomanMeshCloud::pointCloudCallback, this, _1));
   }
   ~MotomanMeshCloud()
   {
@@ -207,7 +213,12 @@ public:
     pcl::PassThrough<pcl::PointXYZ> passthrough_filter;
     passthrough_filter.setInputCloud(cloud);
     passthrough_filter.setFilterFieldName("z");
-    passthrough_filter.setFilterLimits(-0.1, 0.03);
+    passthrough_filter.setFilterLimits(-1.0, 0.1);
+    passthrough_filter.setFilterLimitsNegative (true);
+    passthrough_filter.filter (*cloud);
+	passthrough_filter.setInputCloud(cloud);
+	passthrough_filter.setFilterFieldName("x");
+    passthrough_filter.setFilterLimits(-1.0, -0.1);
     passthrough_filter.setFilterLimitsNegative (true);
     passthrough_filter.filter (*cloud);
     
@@ -231,6 +242,15 @@ public:
     }
   }
 
+  void downSampling(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
+					pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered)
+  {
+	pcl::VoxelGrid<pcl::PointXYZ> sor;
+	sor.setInputCloud (cloud);
+	sor.setLeafSize (0.01f, 0.01f, 0.01f);
+	sor.filter (*cloud_filtered);
+  }
+  
   pcl::PointCloud<pcl::PointXYZ> shiftPointCloud(pcl::PointCloud<pcl::PointXYZ> points, double x, double y, double z, double roll, double pitch, double yaw)
   {
     tf::Matrix3x3 init_rotation;
@@ -246,58 +266,100 @@ public:
   
   void pointCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& kinect_pointcloud)
   {
-    Eigen::Matrix4f t(Eigen::Matrix4f::Identity());
-
-    // ROSのメッセージからPCLの形式に変換
-    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_pc(new pcl::PointCloud<pcl::PointXYZ>());
-    pcl::fromROSMsg(*kinect_pointcloud, *pcl_pc);
-    // デバッグのためにわざとずらす
-    #ifdef gazebo
-    *pcl_shifted_cloud_ = this->shiftPointCloud(*pcl_pc,
-                                                0.1, 0.1, 0, 0.01, 0.01, 0.01);
-    #else
-    *pcl_shifted_cloud_ = *pcl_pc;
-    #endif
-    // world 座標系に変換
-    pcl_ros::transformPointCloud("/world", *pcl_shifted_cloud_, *pcl_shifted_cloud_, tf_);
-    this->cropBox(pcl_shifted_cloud_, pcl_shifted_cloud_);
-    sensor_msgs::PointCloud2 ros_shifted_cloud;
-    pcl::toROSMsg(*pcl_shifted_cloud_, ros_shifted_cloud);
-    ros_shifted_cloud.header.stamp = ros::Time::now();
-    ros_shifted_cloud.header.frame_id = "/world";//kinect_pointcloud->header.frame_id;
-    corrected_cloud_frame_ = "/world";//kinect_pointcloud->header.frame_id;
-    shifted_cloud_publisher_.publish(ros_shifted_cloud); // デバッグのためにずらしたやつのpublish
+	if(init_icp_finished_){
+	  return;
+	}else{
+	  // ROSのメッセージからPCLの形式に変換
+	  pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_pc(new pcl::PointCloud<pcl::PointXYZ>());
+	  pcl::fromROSMsg(*kinect_pointcloud, *pcl_pc);
+	  // デバッグのためにわざとずらす
+#ifdef gazebo
+	  *pcl_shifted_cloud_ = this->shiftPointCloud(*pcl_pc,
+												  0.1, 0.1, 0, 0.01, 0.01, 0.01);
+#else
+	  *pcl_shifted_cloud_ = *pcl_pc;
+#endif
+	  // world 座標系に変換
+	  pcl_ros::transformPointCloud("/world", *pcl_shifted_cloud_, *pcl_shifted_cloud_, tf_);
+	  this->cropBox(pcl_shifted_cloud_, pcl_shifted_cloud_);
+	  this->downSampling(pcl_shifted_cloud_, pcl_shifted_cloud_);
+	  ROS_INFO_STREAM("shifted_cloud size : " << pcl_shifted_cloud_->points.size());
+	  sensor_msgs::PointCloud2 ros_shifted_cloud;
+	  pcl::toROSMsg(*pcl_shifted_cloud_, ros_shifted_cloud);
+	  ros_shifted_cloud.header.stamp = ros::Time::now();
+	  ros_shifted_cloud.header.frame_id = "/world";//kinect_pointcloud->header.frame_id;
+	  corrected_cloud_frame_ = "/world";//kinect_pointcloud->header.frame_id;
+	  shifted_cloud_publisher_.publish(ros_shifted_cloud); // デバッグのためにずらしたやつのpublish
+	}
   }
 
   void run()
   {
     while(ros::ok())
-    {
-      pcl::toROSMsg(sia5_cloud_, mesh_pointcloud_);
-      mesh_pointcloud_.header.stamp = ros::Time::now();
-      mesh_pointcloud_.header.frame_id = "/world";
-      mesh_pointcloud_publisher_.publish(mesh_pointcloud_);
+	  {
+		pcl::toROSMsg(sia5_cloud_, mesh_pointcloud_);
+		mesh_pointcloud_.header.stamp = ros::Time::now();
+		mesh_pointcloud_.header.frame_id = "/world";
+		mesh_pointcloud_publisher_.publish(mesh_pointcloud_);
 
-      pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-
-      pcl::PointCloud<pcl::PointXYZ>::Ptr sia5_ptr(new pcl::PointCloud<pcl::PointXYZ>(sia5_cloud_));
-      std::vector<int> nan_index;
-      pcl::removeNaNFromPointCloud(*pcl_shifted_cloud_, *pcl_shifted_cloud_, nan_index);
-      pcl::removeNaNFromPointCloud(*sia5_ptr, *sia5_ptr, nan_index);
-      icp.setInputSource(pcl_shifted_cloud_);
-      icp.setInputTarget(sia5_ptr);
-      icp.setMaximumIterations(1000);
-      pcl::PointCloud<pcl::PointXYZ> Final;
-      icp.align(Final);
-      sensor_msgs::PointCloud2 ros_corrected_cloud;
-      pcl::toROSMsg(Final, ros_corrected_cloud);
-      ros_corrected_cloud.header.stamp = ros::Time::now();
-      ros_corrected_cloud.header.frame_id = "/world";
-      corrected_cloud_publisher_.publish(ros_corrected_cloud);
-
-      ros::spinOnce();
-      rate_.sleep();
-    }
+		pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
+		pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> ndt;
+		ndt.setTransformationEpsilon (0.01);
+		ndt.setStepSize (0.01);
+		ndt.setResolution (0.1);
+		ndt.setMaximumIterations (5000);
+		pcl::PointCloud<pcl::PointXYZ>::Ptr sia5_ptr(new pcl::PointCloud<pcl::PointXYZ>(sia5_cloud_));
+		std::vector<int> nan_index;
+		pcl::removeNaNFromPointCloud(*pcl_shifted_cloud_, *pcl_shifted_cloud_, nan_index);
+		pcl::removeNaNFromPointCloud(*sia5_ptr, *sia5_ptr, nan_index);
+		
+		icp.setMaximumIterations(1000);
+		if(pcl_shifted_cloud_->points.size() != 0){
+		  // ndt.setInputSource(pcl_shifted_cloud_);
+		  // ndt.setInputTarget(sia5_ptr);
+		  pcl::PointCloud<pcl::PointXYZ> Final;
+		  Eigen::Vector4f c_sia5, c_kinect;
+		  pcl::compute3DCentroid (*sia5_ptr, c_sia5);
+		  pcl::compute3DCentroid (*pcl_shifted_cloud_, c_kinect);
+		  Eigen::AngleAxisf init_rotation (0.0, Eigen::Vector3f::UnitZ ());
+		  Eigen::Translation3f init_translation (c_sia5(0,0)-c_kinect(0,0), c_sia5(1,0)-c_kinect(1,0), c_sia5(2,0)-c_kinect(2,0));
+		  Eigen::Matrix4f init_guess = (init_translation * init_rotation).matrix ();
+		  ROS_INFO_STREAM("Matching Start!!!");
+		  //ndt.align(Final, init_guess);
+		  pcl::PointCloud<pcl::PointXYZ>::Ptr ndt_final_ptr(new pcl::PointCloud<pcl::PointXYZ>(Final));
+		  icp.setInputSource(pcl_shifted_cloud_);
+		  icp.setInputTarget(sia5_ptr);
+		  icp.align(Final, init_guess);
+		  ROS_INFO_STREAM("has converged : " << icp.hasConverged());
+		  ROS_INFO_STREAM("score : " << icp.getFitnessScore());
+		  if(icp.getFitnessScore() < 0.00005){
+			try{
+			  tf::StampedTransform transform;
+			  tf_.lookupTransform("/world", "kinect_first",
+								  ros::Time(0), transform);
+			  Eigen::Affin3d kinect_to_world_transform;
+			  tf::transformTFToEigen(transform, kinect_to_world_transform);
+			  Eigen::Matrix4f world_to_corrected = icp.getFinalTransformation();
+			  Eigen::Matrix4f kinect_first_to_corrected = kinect_to_world_transform*world_to_corrected;
+			  tf::Transform fixed_to_kinect;
+			  tf::transformEigenToTF(fixed_to_kinect, )
+			}catch(...){
+			  ROS_ERROR("tf fail");
+			} 
+		  }
+		  sensor_msgs::PointCloud2 ros_corrected_cloud;
+		  pcl::toROSMsg(Final, ros_corrected_cloud);
+		  ros_corrected_cloud.header.stamp = ros::Time::now();
+		  ros_corrected_cloud.header.frame_id = "/world";
+		  corrected_cloud_publisher_.publish(ros_corrected_cloud);
+		  // if(ndt.hasConverged()){
+		  // 	*pcl_shifted_cloud_ = Final;
+		  // 	init_icp_finished_ = false;
+		  // }
+		}
+		ros::spinOnce();
+		rate_.sleep();
+	  }
   }
 private:
   std::vector<pcl::PolygonMesh> meshes_;
@@ -316,6 +378,7 @@ private:
   sensor_msgs::PointCloud2 kinect_pointcloud_;
   pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_shifted_cloud_;
   std::string corrected_cloud_frame_;
+  bool init_icp_finished_;
 };
 
 
