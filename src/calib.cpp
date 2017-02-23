@@ -14,7 +14,6 @@
 #include <pcl/io/vtk_lib_io.h>
 #include <pcl/point_types.h>
 #include <pcl/registration/icp.h>
-#include <pcl/registration/ndt.h>
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/filters/voxel_grid.h>
@@ -288,8 +287,8 @@ public:
 	  sensor_msgs::PointCloud2 ros_shifted_cloud;
 	  pcl::toROSMsg(*pcl_shifted_cloud_, ros_shifted_cloud);
 	  ros_shifted_cloud.header.stamp = ros::Time::now();
-	  ros_shifted_cloud.header.frame_id = "/base_link";//kinect_pointcloud->header.frame_id;
-	  corrected_cloud_frame_ = "/base_link";//kinect_pointcloud->header.frame_id;
+	  ros_shifted_cloud.header.frame_id = "/base_link";
+	  corrected_cloud_frame_ = "/base_link";
 	  shifted_cloud_publisher_.publish(ros_shifted_cloud); // デバッグのためにずらしたやつのpublish
 	}
   }
@@ -311,11 +310,6 @@ public:
 		mesh_pointcloud_publisher_.publish(mesh_pointcloud_);
 
 		pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-		pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ> ndt;
-		ndt.setTransformationEpsilon (0.01);
-		ndt.setStepSize (0.01);
-		ndt.setResolution (0.1);
-		ndt.setMaximumIterations (5000);
 		pcl::PointCloud<pcl::PointXYZ>::Ptr sia5_ptr(new pcl::PointCloud<pcl::PointXYZ>(sia5_cloud_));
 		std::vector<int> nan_index;
 		pcl::removeNaNFromPointCloud(*pcl_shifted_cloud_, *pcl_shifted_cloud_, nan_index);
@@ -323,8 +317,6 @@ public:
 		
 		icp.setMaximumIterations(1000);
 		if(pcl_shifted_cloud_->points.size() != 0){
-		  // ndt.setInputSource(pcl_shifted_cloud_);
-		  // ndt.setInputTarget(sia5_ptr);
 		  pcl::PointCloud<pcl::PointXYZ> Final;
 		  Eigen::Vector4f c_sia5, c_kinect;
 		  pcl::compute3DCentroid (*sia5_ptr, c_sia5);
@@ -333,14 +325,11 @@ public:
 		  Eigen::Translation3f init_translation (c_sia5(0,0)-c_kinect(0,0), c_sia5(1,0)-c_kinect(1,0), c_sia5(2,0)-c_kinect(2,0));
 		  Eigen::Matrix4f init_guess = (init_translation * init_rotation).matrix ();
 		  ROS_INFO_STREAM("Matching Start!!!");
-		  //ndt.align(Final, init_guess);
-		  
 		  icp.setInputSource(pcl_shifted_cloud_);
 		  icp.setInputTarget(sia5_ptr);
 		  icp.setTransformationEpsilon (1e-12);
 		  icp.setEuclideanFitnessEpsilon (0.00001);
 		  icp.align(Final, init_guess);
-		  //icp.align(Final);
 		  ROS_INFO_STREAM("has converged : " << icp.hasConverged());
 		  ROS_INFO_STREAM("score : " << icp.getFitnessScore());
 		  try{
@@ -352,12 +341,10 @@ public:
 			Eigen::Matrix4d world_to_corrected = (icp.getFinalTransformation()).cast<double>();
 			Eigen::Matrix4d matrix_kinect_to_world = kinect_to_world_transform.matrix();
 			Eigen::Matrix4d kinect_first_to_corrected = world_to_corrected*matrix_kinect_to_world;
-			//Eigen::Matrix4d inv_kinect_first_to_corrected = kinect_first_to_corrected.inverse();
 			Eigen::Affine3d eigen_affine3d(kinect_first_to_corrected);
 			tf::transformEigenToTF(eigen_affine3d, fixed_kinect_frame_);
 			Eigen::Matrix3d rotation_matrix = kinect_first_to_corrected.block(0, 0, 3, 3);
 			Eigen::Vector3d euler_angles = rotation_matrix.eulerAngles(2, 1, 0);
-			//std::cout << "euler_angles : " << euler_angles << std::endl;
 			std::cout << "<origin xyz=\"" << kinect_first_to_corrected(0, 3) << " "
 					  << kinect_first_to_corrected(1, 3) << " "
 					  << kinect_first_to_corrected(2, 3) << "\" rpy=\""
@@ -367,16 +354,11 @@ public:
 		  }catch(...){
 			ROS_ERROR("tf fail");
 		  } 
-		
 		  sensor_msgs::PointCloud2 ros_corrected_cloud;
 		  pcl::toROSMsg(Final, ros_corrected_cloud);
 		  ros_corrected_cloud.header.stamp = ros::Time::now();
 		  ros_corrected_cloud.header.frame_id = "/base_link";
 		  corrected_cloud_publisher_.publish(ros_corrected_cloud);
-		  // if(ndt.hasConverged()){
-		  // 	*pcl_shifted_cloud_ = Final;
-		  // 	init_icp_finished_ = false;
-		  // }
 		}
 		ros::spinOnce();
 		rate_.sleep();
