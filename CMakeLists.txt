@@ -7,6 +7,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   pcl_ros
   pcl_conversions
+  tf_conversions
   )
 
 find_package(VTK REQUIRED)
