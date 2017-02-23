@@ -1,8 +1,8 @@
 #include <ros/ros.h>
 #include <ros/package.h>
 #include <sensor_msgs/PointCloud2.h>
-
-
+#include <tf_conversions/tf_eigen.h>
+#include <tf/transform_broadcaster.h>
 #include <vtkVersion.h>
 #include <vtkPLYReader.h>
 #include <vtkOBJReader.h>
@@ -149,6 +149,7 @@ public:
     shifted_cloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/shifted_cloud",1);
     corrected_cloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/corrected_cloud",1);
     kinect_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>("/kinect_first/hd/points", 10, boost::bind(&MotomanMeshCloud::pointCloudCallback, this, _1));
+	frame_timer_ = nh_.createTimer(ros::Duration(0.01), boost::bind(&MotomanMeshCloud::frameCallback, this, _1));
   }
   ~MotomanMeshCloud()
   {
@@ -173,7 +174,7 @@ public:
       for(size_t i = 0; i< parts_clouds_.size(); ++i){
         try{
           tf::StampedTransform transform;
-          tf_.lookupTransform("/world", frame_names_[i],
+          tf_.lookupTransform("/base_link", frame_names_[i],
                               ros::Time(0), transform);
           pcl_ros::transformPointCloud(parts_clouds_[i],transformed_parts_cloud, transform);
           sia5_cloud_ += transformed_parts_cloud;
@@ -280,26 +281,33 @@ public:
 	  *pcl_shifted_cloud_ = *pcl_pc;
 #endif
 	  // world 座標系に変換
-	  pcl_ros::transformPointCloud("/world", *pcl_shifted_cloud_, *pcl_shifted_cloud_, tf_);
+	  pcl_ros::transformPointCloud("/base_link", *pcl_shifted_cloud_, *pcl_shifted_cloud_, tf_);
 	  this->cropBox(pcl_shifted_cloud_, pcl_shifted_cloud_);
 	  this->downSampling(pcl_shifted_cloud_, pcl_shifted_cloud_);
 	  ROS_INFO_STREAM("shifted_cloud size : " << pcl_shifted_cloud_->points.size());
 	  sensor_msgs::PointCloud2 ros_shifted_cloud;
 	  pcl::toROSMsg(*pcl_shifted_cloud_, ros_shifted_cloud);
 	  ros_shifted_cloud.header.stamp = ros::Time::now();
-	  ros_shifted_cloud.header.frame_id = "/world";//kinect_pointcloud->header.frame_id;
-	  corrected_cloud_frame_ = "/world";//kinect_pointcloud->header.frame_id;
+	  ros_shifted_cloud.header.frame_id = "/base_link";//kinect_pointcloud->header.frame_id;
+	  corrected_cloud_frame_ = "/base_link";//kinect_pointcloud->header.frame_id;
 	  shifted_cloud_publisher_.publish(ros_shifted_cloud); // デバッグのためにずらしたやつのpublish
 	}
   }
 
+  void frameCallback(const ros::TimerEvent&)
+  {
+	std::cout << "frame call back" << std::endl;
+	ros::Time time = ros::Time::now();
+	br_.sendTransform(tf::StampedTransform(fixed_kinect_frame_, time, "world", "fixed_kinect_frame"));
+  }
+  
   void run()
   {
     while(ros::ok())
 	  {
 		pcl::toROSMsg(sia5_cloud_, mesh_pointcloud_);
 		mesh_pointcloud_.header.stamp = ros::Time::now();
-		mesh_pointcloud_.header.frame_id = "/world";
+		mesh_pointcloud_.header.frame_id = "/base_link";
 		mesh_pointcloud_publisher_.publish(mesh_pointcloud_);
 
 		pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
@@ -326,31 +334,44 @@ public:
 		  Eigen::Matrix4f init_guess = (init_translation * init_rotation).matrix ();
 		  ROS_INFO_STREAM("Matching Start!!!");
 		  //ndt.align(Final, init_guess);
-		  pcl::PointCloud<pcl::PointXYZ>::Ptr ndt_final_ptr(new pcl::PointCloud<pcl::PointXYZ>(Final));
+		  
 		  icp.setInputSource(pcl_shifted_cloud_);
 		  icp.setInputTarget(sia5_ptr);
+		  icp.setTransformationEpsilon (1e-12);
+		  icp.setEuclideanFitnessEpsilon (0.00001);
 		  icp.align(Final, init_guess);
+		  //icp.align(Final);
 		  ROS_INFO_STREAM("has converged : " << icp.hasConverged());
 		  ROS_INFO_STREAM("score : " << icp.getFitnessScore());
-		  if(icp.getFitnessScore() < 0.00005){
-			try{
-			  tf::StampedTransform transform;
-			  tf_.lookupTransform("/world", "kinect_first",
-								  ros::Time(0), transform);
-			  Eigen::Affin3d kinect_to_world_transform;
-			  tf::transformTFToEigen(transform, kinect_to_world_transform);
-			  Eigen::Matrix4f world_to_corrected = icp.getFinalTransformation();
-			  Eigen::Matrix4f kinect_first_to_corrected = kinect_to_world_transform*world_to_corrected;
-			  tf::Transform fixed_to_kinect;
-			  tf::transformEigenToTF(fixed_to_kinect, )
-			}catch(...){
-			  ROS_ERROR("tf fail");
-			} 
-		  }
+		  try{
+			tf::StampedTransform transform;
+			tf_.lookupTransform("/base_link", "kinect_first_link",
+								ros::Time(0), transform);
+			Eigen::Affine3d kinect_to_world_transform;
+			tf::transformTFToEigen(transform, kinect_to_world_transform);
+			Eigen::Matrix4d world_to_corrected = (icp.getFinalTransformation()).cast<double>();
+			Eigen::Matrix4d matrix_kinect_to_world = kinect_to_world_transform.matrix();
+			Eigen::Matrix4d kinect_first_to_corrected = world_to_corrected*matrix_kinect_to_world;
+			//Eigen::Matrix4d inv_kinect_first_to_corrected = kinect_first_to_corrected.inverse();
+			Eigen::Affine3d eigen_affine3d(kinect_first_to_corrected);
+			tf::transformEigenToTF(eigen_affine3d, fixed_kinect_frame_);
+			Eigen::Matrix3d rotation_matrix = kinect_first_to_corrected.block(0, 0, 3, 3);
+			Eigen::Vector3d euler_angles = rotation_matrix.eulerAngles(2, 1, 0);
+			//std::cout << "euler_angles : " << euler_angles << std::endl;
+			std::cout << "<origin xyz=\"" << kinect_first_to_corrected(0, 3) << " "
+					  << kinect_first_to_corrected(1, 3) << " "
+					  << kinect_first_to_corrected(2, 3) << "\" rpy=\""
+					  << euler_angles(2) << " "
+					  << euler_angles(1) << " "
+					  << euler_angles(0) << "\" />" << std::endl;
+		  }catch(...){
+			ROS_ERROR("tf fail");
+		  } 
+		
 		  sensor_msgs::PointCloud2 ros_corrected_cloud;
 		  pcl::toROSMsg(Final, ros_corrected_cloud);
 		  ros_corrected_cloud.header.stamp = ros::Time::now();
-		  ros_corrected_cloud.header.frame_id = "/world";
+		  ros_corrected_cloud.header.frame_id = "/base_link";
 		  corrected_cloud_publisher_.publish(ros_corrected_cloud);
 		  // if(ndt.hasConverged()){
 		  // 	*pcl_shifted_cloud_ = Final;
@@ -366,10 +387,12 @@ private:
   sensor_msgs::PointCloud2 mesh_pointcloud_;
   ros::NodeHandle nh_;
   tf::TransformListener tf_;
+  tf::TransformBroadcaster br_;
   ros::Rate rate_;
   ros::Publisher mesh_pointcloud_publisher_;
   ros::Publisher shifted_cloud_publisher_;
   ros::Publisher corrected_cloud_publisher_;
+  ros::Timer frame_timer_;
   ros::Subscriber kinect_subscriber_;
   std::vector<std::string> link_names_;
   std::vector<std::string> frame_names_;
@@ -379,6 +402,7 @@ private:
   pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_shifted_cloud_;
   std::string corrected_cloud_frame_;
   bool init_icp_finished_;
+  tf::Transform fixed_kinect_frame_;
 };
 
 
