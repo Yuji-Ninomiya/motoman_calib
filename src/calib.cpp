@@ -23,7 +23,7 @@
 
 const int sampling_points = 10000;
 
-// #define gazebo
+#define gazebo
 
 inline double
 uniform_deviate (int seed)
@@ -137,10 +137,10 @@ public:
     for(int i = 0; i < link_names_.size(); ++i){
       this->getMesh(ros::package::getPath("motoman_description")+"/meshes/sia5/collision/STL/"+link_names_[i], frame_names_[i]);
     }
-	frame_names_.push_back("dhand_adapter_link");
-	frame_names_.push_back("dhand_base_link");
+    frame_names_.push_back("dhand_adapter_link");
+    frame_names_.push_back("dhand_base_link");
     this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/adapter.STL", "dhand_adapter_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/base.STL", "dhand_base_link");
+    this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/base.STL", "dhand_base_link");
 	
     this->transformMesh();
     
@@ -148,7 +148,7 @@ public:
     shifted_cloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/shifted_cloud",1);
     corrected_cloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/corrected_cloud",1);
     kinect_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>("/kinect_first/hd/points", 10, boost::bind(&MotomanMeshCloud::pointCloudCallback, this, _1));
-	frame_timer_ = nh_.createTimer(ros::Duration(0.01), boost::bind(&MotomanMeshCloud::frameCallback, this, _1));
+    frame_timer_ = nh_.createTimer(ros::Duration(0.01), boost::bind(&MotomanMeshCloud::frameCallback, this, _1));
   }
   ~MotomanMeshCloud()
   {
@@ -216,8 +216,8 @@ public:
     passthrough_filter.setFilterLimits(-1.0, 0.1);
     passthrough_filter.setFilterLimitsNegative (true);
     passthrough_filter.filter (*cloud);
-	passthrough_filter.setInputCloud(cloud);
-	passthrough_filter.setFilterFieldName("x");
+    passthrough_filter.setInputCloud(cloud);
+    passthrough_filter.setFilterFieldName("x");
     passthrough_filter.setFilterLimits(-1.0, -0.1);
     passthrough_filter.setFilterLimitsNegative (true);
     passthrough_filter.filter (*cloud);
@@ -228,7 +228,7 @@ public:
     search_point.x = 0;
     search_point.y = 0;
     search_point.z = 0;
-    double search_radius = 1.0;
+    double search_radius = 1.5;
     std::vector<float> point_radius_squared_distance;
     pcl::PointIndices::Ptr point_idx_radius_search(new pcl::PointIndices());
 
@@ -243,126 +243,180 @@ public:
   }
 
   void downSampling(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
-					pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered)
+                    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered)
   {
-	pcl::VoxelGrid<pcl::PointXYZ> sor;
-	sor.setInputCloud (cloud);
-	sor.setLeafSize (0.01f, 0.01f, 0.01f);
-	sor.filter (*cloud_filtered);
+    pcl::VoxelGrid<pcl::PointXYZ> sor;
+    sor.setInputCloud (cloud);
+    sor.setLeafSize (0.01f, 0.01f, 0.01f);
+    sor.filter (*cloud_filtered);
   }
   
   pcl::PointCloud<pcl::PointXYZ> shiftPointCloud(pcl::PointCloud<pcl::PointXYZ> points, double x, double y, double z, double roll, double pitch, double yaw)
   {
-    tf::Matrix3x3 init_rotation;
-    Eigen::AngleAxisf rotation_x(roll, Eigen::Vector3f::UnitX());
-    Eigen::AngleAxisf rotation_y(pitch, Eigen::Vector3f::UnitY());
-    Eigen::AngleAxisf rotation_z(yaw, Eigen::Vector3f::UnitZ());
-    Eigen::Translation3f translation(x, y, z);
-    Eigen::Matrix4f noize_matrix = (translation * rotation_z * rotation_y * rotation_x).matrix();
     pcl::PointCloud<pcl::PointXYZ> shifted_cloud;
-    pcl::transformPointCloud(points, shifted_cloud, noize_matrix);
+    while(ros::ok()){
+      try{
+        pcl_ros::transformPointCloud("/exactly_kinect_link", points, shifted_cloud, tf_);
+        // frameを偽造する
+        shifted_cloud.header.frame_id = "/kinect_first_link";
+        return shifted_cloud;
+      }catch(tf2::LookupException e){
+        ROS_ERROR("shifted pcl::ros %s",e.what());
+        ros::Duration(1.0).sleep();
+      }catch(tf2::ExtrapolationException e){
+        ROS_ERROR("shifted pcl::ros %s",e.what());
+        ros::Duration(1.0).sleep();
+      }catch(...){
+        ROS_ERROR_STREAM("どうしようもない");
+      }
+    }
     return shifted_cloud;
   }
   
   void pointCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& kinect_pointcloud)
   {
-	if(init_icp_finished_){
-	  return;
-	}else{
-	  // ROSのメッセージからPCLの形式に変換
-	  pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_pc(new pcl::PointCloud<pcl::PointXYZ>());
-	  pcl::fromROSMsg(*kinect_pointcloud, *pcl_pc);
-	  // デバッグのためにわざとずらす
+    if(init_icp_finished_){
+      return;
+    }else{
+      // ROSのメッセージからPCLの形式に変換
+      pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_pc(new pcl::PointCloud<pcl::PointXYZ>());
+      pcl::fromROSMsg(*kinect_pointcloud, *pcl_pc);
+      // デバッグのためにわざとずらす
 #ifdef gazebo
-	  *pcl_shifted_cloud_ = this->shiftPointCloud(*pcl_pc,
-												  0.1, 0.1, 0, 0.01, 0.01, 0.01);
+      *pcl_shifted_cloud_ = this->shiftPointCloud(*pcl_pc,
+                                                  0.1, 0.1, 0.0, 0.01, 0.01, 0.01);
 #else
-	  *pcl_shifted_cloud_ = *pcl_pc;
+      *pcl_shifted_cloud_ = *pcl_pc;
 #endif
-	  // world 座標系に変換
-	  pcl_ros::transformPointCloud("/base_link", *pcl_shifted_cloud_, *pcl_shifted_cloud_, tf_);
-	  this->cropBox(pcl_shifted_cloud_, pcl_shifted_cloud_);
-	  this->downSampling(pcl_shifted_cloud_, pcl_shifted_cloud_);
-	  ROS_INFO_STREAM("shifted_cloud size : " << pcl_shifted_cloud_->points.size());
-	  sensor_msgs::PointCloud2 ros_shifted_cloud;
-	  pcl::toROSMsg(*pcl_shifted_cloud_, ros_shifted_cloud);
-	  ros_shifted_cloud.header.stamp = ros::Time::now();
-	  ros_shifted_cloud.header.frame_id = "/base_link";
-	  corrected_cloud_frame_ = "/base_link";
-	  shifted_cloud_publisher_.publish(ros_shifted_cloud); // デバッグのためにずらしたやつのpublish
-	}
+      // world 座標系に変換
+      pcl_ros::transformPointCloud("/base_link", *pcl_shifted_cloud_, *pcl_shifted_cloud_, tf_);
+      this->cropBox(pcl_shifted_cloud_, pcl_shifted_cloud_);
+      this->downSampling(pcl_shifted_cloud_, pcl_shifted_cloud_);
+      //ROS_INFO_STREAM("shifted_cloud size : " << pcl_shifted_cloud_->points.size());
+      sensor_msgs::PointCloud2 ros_shifted_cloud;
+      pcl::toROSMsg(*pcl_shifted_cloud_, ros_shifted_cloud);
+      ros_shifted_cloud.header.stamp = ros::Time::now();
+      ros_shifted_cloud.header.frame_id = "/base_link";
+      corrected_cloud_frame_ = "/base_link";
+      shifted_cloud_publisher_.publish(ros_shifted_cloud); // デバッグのためにずらしたやつのpublish
+    }
   }
 
   void frameCallback(const ros::TimerEvent&)
   {
-	std::cout << "frame call back" << std::endl;
-	ros::Time time = ros::Time::now();
-	br_.sendTransform(tf::StampedTransform(fixed_kinect_frame_, time, "world", "fixed_kinect_frame"));
+    //std::cout << "frame call back" << std::endl;
+    ros::Time time = ros::Time::now();
+    br_.sendTransform(tf::StampedTransform(fixed_kinect_frame_, time, "base_link", "fixed_kinect_frame"));
+  }
+
+  void calculateErrors(double mx, double my, double mz, double mroll, double mpitch, double myaw,
+                       double rx, double ry, double rz, double rroll, double rpitch, double ryaw, double dot)
+  {
+    double error_x = mx - rx;
+    double error_y = my - ry;
+    double error_z = mz - rz;
+    double error_roll = mroll - rroll;
+    double error_pitch = mpitch - rpitch;
+    double error_yaw = myaw - ryaw;
+    double err_rate_x = (error_x/rx)*100.0; //ここの計算に問題有り
+    double err_rate_y = (error_y/ry)*100.0;
+    double err_rate_z = (error_z/rz)*100.0;
+    double err_rate_roll = (error_roll/rroll)*100.0;
+    double err_rate_pitch = (error_pitch/rpitch)*100.0;
+    double err_rate_yaw = (error_yaw/ryaw)*100.0;
+    std::cout << "[err] x : " << error_x << ", y : " << error_y << ", z : " << error_z
+              << ", roll : " << error_roll << ", pitch : " << error_pitch << ", yaw : " << error_yaw << std::endl;
+    std::cout << "[rate] x : " << err_rate_x << ", y : " << err_rate_y << ", z : " << err_rate_z
+              << ", roll : " << err_rate_roll << ", pitch : " << err_rate_pitch << ", yaw : " << err_rate_yaw << std::endl;
+    std::cout << "dot : " << dot << std::endl;
   }
   
   void run()
   {
     while(ros::ok())
-	  {
-		pcl::toROSMsg(sia5_cloud_, mesh_pointcloud_);
-		mesh_pointcloud_.header.stamp = ros::Time::now();
-		mesh_pointcloud_.header.frame_id = "/base_link";
-		mesh_pointcloud_publisher_.publish(mesh_pointcloud_);
+    {
+      pcl::toROSMsg(sia5_cloud_, mesh_pointcloud_);
+      mesh_pointcloud_.header.stamp = ros::Time::now();
+      mesh_pointcloud_.header.frame_id = "/base_link";
+      mesh_pointcloud_publisher_.publish(mesh_pointcloud_);
 
-		pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-		pcl::PointCloud<pcl::PointXYZ>::Ptr sia5_ptr(new pcl::PointCloud<pcl::PointXYZ>(sia5_cloud_));
-		std::vector<int> nan_index;
-		pcl::removeNaNFromPointCloud(*pcl_shifted_cloud_, *pcl_shifted_cloud_, nan_index);
-		pcl::removeNaNFromPointCloud(*sia5_ptr, *sia5_ptr, nan_index);
-		
-		icp.setMaximumIterations(1000);
-		if(pcl_shifted_cloud_->points.size() != 0){
-		  pcl::PointCloud<pcl::PointXYZ> Final;
-		  Eigen::Vector4f c_sia5, c_kinect;
-		  pcl::compute3DCentroid (*sia5_ptr, c_sia5);
-		  pcl::compute3DCentroid (*pcl_shifted_cloud_, c_kinect);
-		  Eigen::AngleAxisf init_rotation (0.0, Eigen::Vector3f::UnitZ ());
-		  Eigen::Translation3f init_translation (c_sia5(0,0)-c_kinect(0,0), c_sia5(1,0)-c_kinect(1,0), c_sia5(2,0)-c_kinect(2,0));
-		  Eigen::Matrix4f init_guess = (init_translation * init_rotation).matrix ();
-		  ROS_INFO_STREAM("Matching Start!!!");
-		  icp.setInputSource(pcl_shifted_cloud_);
-		  icp.setInputTarget(sia5_ptr);
-		  icp.setTransformationEpsilon (1e-12);
-		  icp.setEuclideanFitnessEpsilon (0.00001);
-		  icp.align(Final, init_guess);
-		  ROS_INFO_STREAM("has converged : " << icp.hasConverged());
-		  ROS_INFO_STREAM("score : " << icp.getFitnessScore());
-		  try{
-			tf::StampedTransform transform;
-			tf_.lookupTransform("/base_link", "kinect_first_link",
-								ros::Time(0), transform);
-			Eigen::Affine3d kinect_to_world_transform;
-			tf::transformTFToEigen(transform, kinect_to_world_transform);
-			Eigen::Matrix4d world_to_corrected = (icp.getFinalTransformation()).cast<double>();
-			Eigen::Matrix4d matrix_kinect_to_world = kinect_to_world_transform.matrix();
-			Eigen::Matrix4d kinect_first_to_corrected = world_to_corrected*matrix_kinect_to_world;
-			Eigen::Affine3d eigen_affine3d(kinect_first_to_corrected);
-			tf::transformEigenToTF(eigen_affine3d, fixed_kinect_frame_);
-			Eigen::Matrix3d rotation_matrix = kinect_first_to_corrected.block(0, 0, 3, 3);
-			Eigen::Vector3d euler_angles = rotation_matrix.eulerAngles(2, 1, 0);
-			std::cout << "<origin xyz=\"" << kinect_first_to_corrected(0, 3) << " "
-					  << kinect_first_to_corrected(1, 3) << " "
-					  << kinect_first_to_corrected(2, 3) << "\" rpy=\""
-					  << euler_angles(2) << " "
-					  << euler_angles(1) << " "
-					  << euler_angles(0) << "\" />" << std::endl;
-		  }catch(...){
-			ROS_ERROR("tf fail");
-		  } 
-		  sensor_msgs::PointCloud2 ros_corrected_cloud;
-		  pcl::toROSMsg(Final, ros_corrected_cloud);
-		  ros_corrected_cloud.header.stamp = ros::Time::now();
-		  ros_corrected_cloud.header.frame_id = "/base_link";
-		  corrected_cloud_publisher_.publish(ros_corrected_cloud);
-		}
-		ros::spinOnce();
-		rate_.sleep();
-	  }
+      pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
+      pcl::PointCloud<pcl::PointXYZ>::Ptr sia5_ptr(new pcl::PointCloud<pcl::PointXYZ>(sia5_cloud_));
+      std::vector<int> nan_index;
+      pcl::removeNaNFromPointCloud(*pcl_shifted_cloud_, *pcl_shifted_cloud_, nan_index);
+      pcl::removeNaNFromPointCloud(*sia5_ptr, *sia5_ptr, nan_index);
+      icp.setMaximumIterations(1000);
+      if(pcl_shifted_cloud_->points.size() != 0){
+        pcl::PointCloud<pcl::PointXYZ> Final;
+        Eigen::Vector4f c_sia5, c_kinect;
+        pcl::compute3DCentroid (*sia5_ptr, c_sia5);
+        pcl::compute3DCentroid (*pcl_shifted_cloud_, c_kinect);
+        Eigen::AngleAxisf init_rotation (0.0, Eigen::Vector3f::UnitZ ());
+        Eigen::Translation3f init_translation (c_sia5(0,0)-c_kinect(0,0), c_sia5(1,0)-c_kinect(1,0), c_sia5(2,0)-c_kinect(2,0));
+        Eigen::Matrix4f init_guess = (init_translation * init_rotation).matrix ();
+        ROS_INFO_STREAM("Matching Start!!!");
+        icp.setInputSource(pcl_shifted_cloud_);
+        icp.setInputTarget(sia5_ptr);
+        icp.setTransformationEpsilon (1e-12);
+        icp.setEuclideanFitnessEpsilon (0.00001);
+        icp.align(Final, init_guess);
+        ROS_INFO_STREAM("has converged : " << icp.hasConverged());
+        ROS_INFO_STREAM("score : " << icp.getFitnessScore());
+        try{
+          tf::StampedTransform transform;
+          tf_.lookupTransform("/base_link", "kinect_first_link",
+                              ros::Time(0), transform);
+          Eigen::Affine3d kinect_to_world_transform;
+          tf::transformTFToEigen(transform, kinect_to_world_transform);
+          Eigen::Matrix4d world_to_corrected = (icp.getFinalTransformation()).cast<double>();
+          Eigen::Matrix4d matrix_kinect_to_world = kinect_to_world_transform.matrix();
+          Eigen::Matrix4d kinect_first_to_corrected = world_to_corrected*matrix_kinect_to_world;
+          Eigen::Affine3d eigen_affine3d(kinect_first_to_corrected);
+          tf::transformEigenToTF(eigen_affine3d, fixed_kinect_frame_);
+          Eigen::Matrix3d rotation_matrix = kinect_first_to_corrected.block(0, 0, 3, 3);
+          Eigen::Vector3d euler_angles = rotation_matrix.eulerAngles(2, 1, 0);
+          std::cout << "<origin xyz=\"" << kinect_first_to_corrected(0, 3) << " "
+                    << kinect_first_to_corrected(1, 3) << " "
+                    << kinect_first_to_corrected(2, 3) << "\" rpy=\""
+                    << euler_angles(2) << " "
+                    << euler_angles(1) << " "
+                    << euler_angles(0) << "\" />" << std::endl;
+          #ifdef gazebo
+          tf::StampedTransform exactly_transform;
+          tf_.lookupTransform("/base_link", "/exactly_kinect_link",
+                              ros::Time(0), exactly_transform);
+          Eigen::Affine3d exactly_transform_affine;
+          tf::transformTFToEigen(exactly_transform, exactly_transform_affine);
+          Eigen::Matrix3d exactly_rotate_matrix = exactly_transform_affine.matrix().block(0, 0, 3, 3);
+          Eigen::Vector3d exactly_euler_angles = exactly_rotate_matrix.eulerAngles(2, 1, 0);
+          std::cout << "<origin xyz=\"" << exactly_transform.getOrigin().x() << " "
+                    <<  exactly_transform.getOrigin().y() << " "
+                    <<  exactly_transform.getOrigin().z() << "\" rpy=\""
+                    << exactly_euler_angles(2) << " "
+                    <<  exactly_euler_angles(1) << " "
+                    << exactly_euler_angles(0) << "\" />" << std::endl;
+          this->calculateErrors(kinect_first_to_corrected(0, 3),
+                                kinect_first_to_corrected(1, 3),
+                                kinect_first_to_corrected(2, 3),
+                                euler_angles(2), euler_angles(1), euler_angles(0),
+                                exactly_transform.getOrigin().x(),
+                                exactly_transform.getOrigin().y(),
+                                exactly_transform.getOrigin().z(),
+                                exactly_euler_angles(2), exactly_euler_angles(1), exactly_euler_angles(0),
+                                exactly_euler_angles.dot(euler_angles));
+          #endif
+        }catch(...){
+          ROS_ERROR("tf fail");
+        } 
+        sensor_msgs::PointCloud2 ros_corrected_cloud;
+        pcl::toROSMsg(Final, ros_corrected_cloud);
+        ros_corrected_cloud.header.stamp = ros::Time::now();
+        ros_corrected_cloud.header.frame_id = "/base_link";
+        corrected_cloud_publisher_.publish(ros_corrected_cloud);
+      }
+      ros::spinOnce();
+      rate_.sleep();
+    }
   }
 private:
   std::vector<pcl::PolygonMesh> meshes_;
