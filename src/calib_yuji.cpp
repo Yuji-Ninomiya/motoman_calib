@@ -71,8 +71,8 @@ randPSurface (vtkPolyData * polydata, std::vector<double> * cumulativeAreas, dou
   polydata->GetPoint (ptIds[0], A);
   polydata->GetPoint (ptIds[1], B);
   polydata->GetPoint (ptIds[2], C);
-  randomPointTriangle (float (A[0]), float (A[1]), float (A[2]),
-                       float (B[0]), float (B[1]), float (B[2]),
+  randomPointTriangle (float (A[0]), float (A[1]), float (A[2]), 
+                       float (B[0]), float (B[1]), float (B[2]), 
                        float (C[0]), float (C[1]), float (C[2]), p);
 }
 
@@ -131,38 +131,19 @@ public:
     frame_names_.push_back("/link_b");
     link_names_.push_back("link_t.stl");
     frame_names_.push_back("/link_t");
-
+	
     corrected_cloud_frame_ = "kinect2_rgb_optical_frame";
-
+    
     for(int i = 0; i < link_names_.size(); ++i){
       this->getMesh(ros::package::getPath("motoman_description")+"/meshes/sia5/collision/STL/"+link_names_[i], frame_names_[i]);
     }
 	frame_names_.push_back("dhand_adapter_link");
 	frame_names_.push_back("dhand_base_link");
-	frame_names_.push_back("dhand_finger_base_left_link");
-	frame_names_.push_back("dhand_finger_base_middle_link");
-    frame_names_.push_back("dhand_finger_base_right_link");
-	frame_names_.push_back("dhand_finger_middle_left_link");
-	frame_names_.push_back("dhand_finger_middle_middle_link");
-    frame_names_.push_back("dhand_finger_middle_right_link");
-	frame_names_.push_back("dhand_finger_top_left_link");
-    frame_names_.push_back("dhand_finger_top_middle_link");
-    frame_names_.push_back("dhand_finger_top_right_link");
     this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/adapter.STL", "dhand_adapter_link");
 	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/base.STL", "dhand_base_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/finger/finger_base.STL", "dhand_finger_base_left_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/finger/finger_base.STL", "dhand_finger_base_middle_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/finger/finger_base.STL", "dhand_finger_base_right_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/finger/finger_middle.STL", "dhand_finger_middle_left_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/finger/finger_middle.STL", "dhand_finger_middle_middle_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/finger/finger_middle.STL", "dhand_finger_middle_right_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/finger/finger_top.STL", "dhand_finger_top_left_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/finger/finger_top.STL", "dhand_finger_top_middle_link");
-	this->getMesh(ros::package::getPath("dhand_description")+"/meshes/collision/finger/finger_top.STL", "dhand_finger_top_right_link");
-
-
+	
     this->transformMesh();
-
+    
     mesh_pointcloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/mesh_cloud", 1);
     shifted_cloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/shifted_cloud",1);
     corrected_cloud_publisher_ = nh_.advertise<sensor_msgs::PointCloud2>("/corrected_cloud",1);
@@ -181,7 +162,7 @@ public:
     pcl::PointCloud<pcl::PointXYZ>::Ptr parts_cloud(new pcl::PointCloud<pcl::PointXYZ>);
     uniform_sampling (polydata1, sampling_points, *parts_cloud);
     parts_clouds_.push_back(*parts_cloud);
-
+    
     //pcl_conversions::fromPCL(*cloud_1, mesh_pointcloud_);
   }
 
@@ -225,43 +206,41 @@ public:
     exit(-1);
     return;
   }
+  
+  void cropBox(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
+               pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered)
+  {
+    pcl::PassThrough<pcl::PointXYZ> passthrough_filter;
+    passthrough_filter.setInputCloud(cloud);
+    passthrough_filter.setFilterFieldName("z");
+    passthrough_filter.setFilterLimits(-1.0, 0.1);
+    passthrough_filter.setFilterLimitsNegative (true);
+    passthrough_filter.filter (*cloud);
+	passthrough_filter.setInputCloud(cloud);
+	passthrough_filter.setFilterFieldName("x");
+    passthrough_filter.setFilterLimits(-1.0, -0.1);
+    passthrough_filter.setFilterLimitsNegative (true);
+    passthrough_filter.filter (*cloud);
+    
+    pcl::search::KdTree<pcl::PointXYZ> kdtree;
+    kdtree.setInputCloud(cloud);
+    pcl::PointXYZ search_point;
+    search_point.x = 0;
+    search_point.y = 0;
+    search_point.z = 0;
+    double search_radius = 1.0;
+    std::vector<float> point_radius_squared_distance;
+    pcl::PointIndices::Ptr point_idx_radius_search(new pcl::PointIndices());
 
-  // void cropBox(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
-  //              pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered)
-  // {
-  //   pcl::PassThrough<pcl::PointXYZ> passthrough_filter;
-  //   passthrough_filter.setInputCloud(cloud);
-  //   passthrough_filter.setFilterFieldName("z");
-  //   // passthrough_filter.setFilterLimits(-1.0, 0.1);
-  // 	passthrough_filter.setFilterLimits(-1.0, 0.1);
-  //   passthrough_filter.setFilterLimitsNegative (true);
-  //   passthrough_filter.filter (*cloud);
-  // 	passthrough_filter.setInputCloud(cloud);
-  // 	passthrough_filter.setFilterFieldName("x");
-  //   // passthrough_filter.setFilterLimits(-1.0, -0.1);
-  // 	passthrough_filter.setFilterLimits(-1.0, -0.3);
-  //   passthrough_filter.setFilterLimitsNegative (true);
-  //   passthrough_filter.filter (*cloud);
-
-  //   pcl::search::KdTree<pcl::PointXYZ> kdtree;
-  //   kdtree.setInputCloud(cloud);
-  //   pcl::PointXYZ search_point;
-  //   search_point.x = 0;
-  //   search_point.y = 0;
-  //   search_point.z = 0;
-  //   double search_radius = 1.0;
-  //   std::vector<float> point_radius_squared_distance;
-  //   pcl::PointIndices::Ptr point_idx_radius_search(new pcl::PointIndices());
-
-  //   if ( kdtree.radiusSearch (search_point, search_radius, point_idx_radius_search->indices, point_radius_squared_distance) > 0 )
-  //   {
-  //     pcl::ExtractIndices<pcl::PointXYZ> extractor;
-  //     extractor.setInputCloud(cloud);
-  //     extractor.setIndices(point_idx_radius_search);
-  //     extractor.setNegative(false);
-  //     extractor.filter(*cloud_filtered);
-  //   }
-  // }
+    if ( kdtree.radiusSearch (search_point, search_radius, point_idx_radius_search->indices, point_radius_squared_distance) > 0 )
+    {
+      pcl::ExtractIndices<pcl::PointXYZ> extractor;
+      extractor.setInputCloud(cloud);
+      extractor.setIndices(point_idx_radius_search);
+      extractor.setNegative(false);
+      extractor.filter(*cloud_filtered);
+    }
+  }
 
   void downSampling(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
 					pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered)
@@ -271,7 +250,7 @@ public:
 	sor.setLeafSize (0.01f, 0.01f, 0.01f);
 	sor.filter (*cloud_filtered);
   }
-
+  
   pcl::PointCloud<pcl::PointXYZ> shiftPointCloud(pcl::PointCloud<pcl::PointXYZ> points, double x, double y, double z, double roll, double pitch, double yaw)
   {
     tf::Matrix3x3 init_rotation;
@@ -284,7 +263,7 @@ public:
     pcl::transformPointCloud(points, shifted_cloud, noize_matrix);
     return shifted_cloud;
   }
-
+  
   void pointCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& kinect_pointcloud)
   {
 	if(init_icp_finished_){
@@ -293,32 +272,24 @@ public:
 	  // ROSのメッセージからPCLの形式に変換
 	  pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_pc(new pcl::PointCloud<pcl::PointXYZ>());
 	  pcl::fromROSMsg(*kinect_pointcloud, *pcl_pc);
-	  tf::StampedTransform transform;
-	  // world 座標系に変換
-	  try{
-		tf_.waitForTransform("/base_link", kinect_pointcloud->header.frame_id, ros::Time(0), ros::Duration(10.0));
-		tf_.lookupTransform("/base_link", kinect_pointcloud->header.frame_id, ros::Time(0), transform);
-		Eigen::Matrix4f eigen_transform;
-		pcl_ros::transformAsMatrix(transform, eigen_transform);
-		std::cout << eigen_transform << std::endl;
-		std::cout << "kinect :" << kinect_pointcloud->data.size() << std::endl;
-		Eigen::Affine3f eigen_affine_transform(eigen_transform);
-		pcl::transformPointCloud(*pcl_pc, *pcl_shifted_cloud_, eigen_affine_transform);
-		
-		// this->cropBox(pcl_shifted_cloud_, pcl_shifted_cloud_);
-		this->downSampling(pcl_shifted_cloud_, pcl_shifted_cloud_);
-		ROS_INFO_STREAM("shifted_cloud size : " << pcl_shifted_cloud_->points.size());
-		sensor_msgs::PointCloud2 ros_shifted_cloud;
-		pcl::toROSMsg(*pcl_shifted_cloud_, ros_shifted_cloud);
-		ros_shifted_cloud.header.stamp = ros::Time::now();
-		ros_shifted_cloud.header.frame_id = "/base_link";
-		corrected_cloud_frame_ = "/base_link";
-		shifted_cloud_publisher_.publish(ros_shifted_cloud); // デバッグのためにずらしたやつのpublish
-
-	  }catch(tf::TransformException ex){
-		ROS_ERROR("%s", ex.what());
-	  }
-
+	  // デバッグのためにわざとずらす
+#ifdef gazebo
+	  *pcl_shifted_cloud_ = this->shiftPointCloud(*pcl_pc,
+												  0.1, 0.1, 0, 0.01, 0.01, 0.01);
+#else
+	  *pcl_shifted_cloud_ = *pcl_pc;
+#endif
+	  // world 座標系に変換 初期値の設定
+	  pcl_ros::transformPointCloud("/base_link", *pcl_shifted_cloud_, *pcl_shifted_cloud_, tf_);
+	  this->cropBox(pcl_shifted_cloud_, pcl_shifted_cloud_);
+	  this->downSampling(pcl_shifted_cloud_, pcl_shifted_cloud_);
+	  ROS_INFO_STREAM("shifted_cloud size : " << pcl_shifted_cloud_->points.size());
+	  sensor_msgs::PointCloud2 ros_shifted_cloud;
+	  pcl::toROSMsg(*pcl_shifted_cloud_, ros_shifted_cloud); // shifted_cloud を ros_shiftedcloud へ変換
+	  ros_shifted_cloud.header.stamp = ros::Time::now();
+	  ros_shifted_cloud.header.frame_id = "/base_link";
+	  corrected_cloud_frame_ = "/base_link";
+	  shifted_cloud_publisher_.publish(ros_shifted_cloud); // デバッグのためにずらしたやつのpublish
 	}
   }
 
@@ -328,7 +299,7 @@ public:
 	ros::Time time = ros::Time::now();
 	br_.sendTransform(tf::StampedTransform(fixed_kinect_frame_, time, "world", "fixed_kinect_frame"));
   }
-
+  
   void run()
   {
     while(ros::ok())
@@ -343,8 +314,8 @@ public:
 		std::vector<int> nan_index;
 		pcl::removeNaNFromPointCloud(*pcl_shifted_cloud_, *pcl_shifted_cloud_, nan_index);
 		pcl::removeNaNFromPointCloud(*sia5_ptr, *sia5_ptr, nan_index);
-
-		icp.setMaximumIterations(10000);
+		
+		icp.setMaximumIterations(1000);
 		if(pcl_shifted_cloud_->points.size() != 0){
 		  pcl::PointCloud<pcl::PointXYZ> Final;
 		  Eigen::Vector4f c_sia5, c_kinect;
@@ -362,9 +333,9 @@ public:
 		  ROS_INFO_STREAM("has converged : " << icp.hasConverged());
 		  ROS_INFO_STREAM("score : " << icp.getFitnessScore());
 		  try{
-			tf::StampedTransform transform;
-			tf_.lookupTransform("/base_link", "kinect_first_link",
-								ros::Time::now(), transform);
+			tf::StampedTransform transform;   //座標変換あれこれ
+			tf_.lookupTransform("/base_link", "kinect_first_rgb_optical_frame",
+								ros::Time(0), transform);
 			Eigen::Affine3d kinect_to_world_transform;
 			tf::transformTFToEigen(transform, kinect_to_world_transform);
 			Eigen::Matrix4d world_to_corrected = (icp.getFinalTransformation()).cast<double>();
@@ -382,7 +353,7 @@ public:
 					  << euler_angles(0) << "\" />" << std::endl;
 		  }catch(...){
 			ROS_ERROR("tf fail");
-		  }
+		  } 
 		  sensor_msgs::PointCloud2 ros_corrected_cloud;
 		  pcl::toROSMsg(Final, ros_corrected_cloud);
 		  ros_corrected_cloud.header.stamp = ros::Time::now();
@@ -395,7 +366,7 @@ public:
   }
 private:
   std::vector<pcl::PolygonMesh> meshes_;
-  sensor_msgs::PointCloud2 mesh_pointcloud_;
+  sensor_msgs::PontCloud2 mesh_pointcloud_;
   ros::NodeHandle nh_;
   tf::TransformListener tf_;
   tf::TransformBroadcaster br_;
